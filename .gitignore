@@ -1,0 +1,8 @@
+config.py
+secrets.py
+credentials.json
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+.claude/

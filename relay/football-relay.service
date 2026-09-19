@@ -1,0 +1,14 @@
+[Unit]
+Description=Football scoreboard relay for LED matrix display
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/robbie/football_relay/football_relay.py
+Restart=on-failure
+RestartSec=5
+User=robbie
+
+[Install]
+WantedBy=multi-user.target
