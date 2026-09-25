@@ -97,7 +97,9 @@ class LeagueScorePager:
     stutter -- a static page just holds a little longer than usual.
     """
 
-    def __init__(self, font, group):
+    def __init__(self, font, group, title):
+        self.title = title
+        self.has_data = False
         self.header_label = Label(font, text="", color=0x00CFFF)
         self.header_label.anchor_point = (0.5, 0.5)
         self.header_label.anchored_position = (32, 4)
@@ -118,9 +120,26 @@ class LeagueScorePager:
         self.league_started_at = time.monotonic()
 
     def set_data(self, leagues):
-        self.leagues = leagues or []
-        if self.leagues:
+        # Leagues with nothing on today are dropped entirely, so the pager
+        # only ever rotates through competitions that actually have matches.
+        current_name, _ = self._current_league()
+        self.has_data = True
+        self.leagues = [(name, matches) for name, matches in (leagues or []) if matches]
+        if not self.leagues:
+            self.league_index = 0
+            return
+
+        names = [name for name, _ in self.leagues]
+        if current_name in names:
+            self.league_index = names.index(current_name)
+        else:
+            # The league on screen disappeared (or this is the first data):
+            # start the next one fresh rather than mid-way through its timer.
             self.league_index %= len(self.leagues)
+            self.page_index = 0
+            now = time.monotonic()
+            self.league_started_at = now
+            self.page_started_at = now
 
     def _current_league(self):
         if not self.leagues:
@@ -155,22 +174,17 @@ class LeagueScorePager:
     def update(self):
         league_name, matches = self._current_league()
         if league_name is None:
-            self.header_label.text = "No data yet"
-            for lbl in self.row_labels:
-                lbl.text = ""
+            self.header_label.text = self.title
+            self.row_labels[0].text = "No matches today" if self.has_data else "Loading..."
+            self.row_labels[1].text = ""
             return
 
         self.header_label.text = league_name
-
-        if not matches:
-            self.row_labels[0].text = "No matches today"
-            self.row_labels[1].text = ""
-        else:
-            self.page_index %= self._page_count(matches)  # clamp if data shrank
-            start = self.page_index * 2
-            page = matches[start:start + 2]
-            for i, lbl in enumerate(self.row_labels):
-                lbl.text = self._match_line(page[i]) if i < len(page) else ""
+        self.page_index %= self._page_count(matches)  # clamp if data shrank
+        start = self.page_index * 2
+        page = matches[start:start + 2]
+        for i, lbl in enumerate(self.row_labels):
+            lbl.text = self._match_line(page[i]) if i < len(page) else ""
 
         if time.monotonic() - self.page_started_at > PAGE_SECONDS:
             self._advance_page()
@@ -239,8 +253,8 @@ def maybe_fetch(mode_name, requests):
 
 
 CUSTOM_WIDGETS = {
-    "football": LeagueScorePager(FONT, group),
-    "rugby": LeagueScorePager(FONT, group),
+    "football": LeagueScorePager(FONT, group, "Football"),
+    "rugby": LeagueScorePager(FONT, group, "Rugby"),
 }
 
 
