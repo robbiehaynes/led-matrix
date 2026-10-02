@@ -32,3 +32,22 @@ def connect():
     pool = adafruit_connection_manager.get_radio_socketpool(esp)
     ssl_context = adafruit_connection_manager.get_radio_ssl_context(esp)
     return adafruit_requests.Session(pool, ssl_context), esp
+
+
+def reconnect(esp, attempts=3):
+    """
+    Hard-resets the ESP32 and rejoins Wi-Fi, which clears hung sockets as
+    well as dropped associations. Returns True on success. The existing
+    requests session stays usable: it holds the same esp object.
+    """
+    for attempt in range(attempts):
+        try:
+            print(f"Reconnecting Wi-Fi (attempt {attempt + 1}/{attempts})...")
+            esp.reset()
+            esp.connect_AP(secrets["ssid"], secrets["password"])
+            if esp.is_connected:
+                print("Wi-Fi reconnected")
+                return True
+        except (OSError, RuntimeError) as e:
+            print(f"  reconnect failed: {e!r}")
+    return False

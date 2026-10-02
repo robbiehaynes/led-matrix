@@ -18,6 +18,7 @@ import gc
 import board
 import displayio
 import digitalio
+import microcontroller
 from adafruit_matrixportal.matrix import Matrix
 from adafruit_display_text.label import Label
 from adafruit_bitmap_font import bitmap_font
@@ -230,7 +231,29 @@ cache = {}
 FETCH_RETRY_SECONDS = 5  # backoff after a failed fetch -- short, but not every tick
 
 
-def maybe_fetch(mode_name, requests):
+# Self-healing: a hung AirLift or dropped Wi-Fi makes every fetch fail until
+# power-cycled (seen 2026-10-02). After this many consecutive failures, hard
+# reset the ESP32 and rejoin Wi-Fi; if failures continue past the second
+# threshold (or the rejoin fails), reboot the whole board.
+RECONNECT_AFTER_FAILURES = 5
+REBOOT_AFTER_FAILURES = 10
+consecutive_failures = 0
+
+
+def recover_connection(esp):
+    """Escalating recovery, called after each failed fetch."""
+    if consecutive_failures >= REBOOT_AFTER_FAILURES:
+        print("Too many failed fetches, rebooting board")
+        microcontroller.reset()
+    elif consecutive_failures == RECONNECT_AFTER_FAILURES:
+        render_lines(["Reconnecting", "Wi-Fi..."])
+        if not net.reconnect(esp):
+            print("Reconnect failed, rebooting board")
+            microcontroller.reset()
+
+
+def maybe_fetch(mode_name, requests, esp):
+    global consecutive_failures
     interval = FETCH_INTERVAL_SECONDS.get(mode_name)
     fetcher = FETCHERS.get(mode_name)
     if interval is None or fetcher is None:
@@ -243,12 +266,18 @@ def maybe_fetch(mode_name, requests):
 
     try:
         data = fetcher(requests)
-        cache[mode_name] = {"data": data, "fetched_at": now, "next_interval": interval}
+        cache[mode_name] = {"data": data, "fetched_at": now, "next_interval": interval, "failed": False}
+        consecutive_failures = 0
         print(f"[{mode_name}] fetched OK, free mem: {gc.mem_free()}")
     except Exception as e:  # noqa: BLE001 -- keep the loop alive on any fetch error
-        print(f"[{mode_name}] fetch failed: {e!r}")
+        consecutive_failures += 1
+        print(f"[{mode_name}] fetch failed ({consecutive_failures} in a row): {e!r}")
         prev_data = entry["data"] if entry else None
-        cache[mode_name] = {"data": prev_data, "fetched_at": now, "next_interval": FETCH_RETRY_SECONDS}
+        cache[mode_name] = {
+            "data": prev_data, "fetched_at": now,
+            "next_interval": FETCH_RETRY_SECONDS, "failed": True,
+        }
+        recover_connection(esp)
     gc.collect()
 
 
@@ -263,6 +292,16 @@ def render_current(mode_name):
     for other in CUSTOM_WIDGETS.values():
         if other is not widget:
             other.clear()
+
+    # Fetch failed and there's no earlier data to fall back on: say so,
+    # rather than showing "No planes" / "Loading..." which look like real
+    # empty results.
+    entry = cache.get(mode_name)
+    if entry and entry.get("failed") and entry["data"] is None:
+        if widget is not None:
+            widget.clear()
+        render_lines(["Fetch error", "retrying..."])
+        return
 
     if widget is not None:
         render_lines(["", "", "", ""])  # clear the static-line labels
@@ -301,7 +340,7 @@ if __name__ == "__main__":
         elif down_edge:
             render_current(cycler.previous())
 
-        maybe_fetch(cycler.current, requests)
+        maybe_fetch(cycler.current, requests, esp)
         render_current(cycler.current)
 
         time.sleep(0.02)
