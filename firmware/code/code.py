@@ -24,6 +24,7 @@ from adafruit_display_text.label import Label
 from adafruit_bitmap_font import bitmap_font
 
 from modes import ModeCycler
+import cards
 import net
 import planes
 import football
@@ -88,6 +89,31 @@ def render_placeholder(mode_name):
     render_lines([mode_name.upper(), "(coming soon)"])
 
 
+# Card markers: one pixel per card in a vertical column beside each team name,
+# top slot first (reds sort first on the relay). Rows are 2px apart so there's
+# a gap between cards, spanning the 5px text height centred on the row's y.
+# Nudge CARD_TOP_OFFSET by +/-1 if they sit a pixel off the text on hardware.
+CARD_TOP_OFFSET = -2
+CARD_SLOT_SPACING = 2
+CARD_COLORS = {"R": 1, "Y": 2}  # palette indices; 0 is transparent
+FALLBACK_ADVANCE = 4  # tom-thumb glyph width + 1px spacing, if a glyph lookup fails
+
+
+def make_advance(font):
+    """advance(char) -> pixel width, from the loaded font's own glyph metrics."""
+    cache = {}
+
+    def advance(ch):
+        width = cache.get(ch)
+        if width is None:
+            glyph = font.get_glyph(ord(ch))
+            width = glyph.shift_x if glyph else FALLBACK_ADVANCE
+            cache[ch] = width
+        return width
+
+    return advance
+
+
 class LeagueScorePager:
     """
     League name stays static in the top row. Below it, up to 2 matches are
@@ -113,6 +139,17 @@ class LeagueScorePager:
             lbl.anchored_position = (TEXT_X, y)
             group.append(lbl)
             self.row_labels.append(lbl)
+
+        # Transparent overlay holding the card pixels, drawn above the text.
+        self.row_ys = (14, 24)
+        self.advance = make_advance(font)
+        self.card_bitmap = displayio.Bitmap(64, 32, 3)
+        card_palette = displayio.Palette(3)
+        card_palette.make_transparent(0)
+        card_palette[1] = 0xFF0000
+        card_palette[2] = 0xFFB000
+        group.append(displayio.TileGrid(self.card_bitmap, pixel_shader=card_palette))
+        self.cards_drawn = None  # signature of what's currently drawn
 
         self.leagues = []  # list of (league_name, matches)
         self.league_index = 0
@@ -172,12 +209,32 @@ class LeagueScorePager:
     def _match_line(m):
         return f"{m['home']} {m['home_score']}-{m['away_score']} {m['away']}  {m['status']}"
 
+    def _draw_cards(self, page):
+        """Redraws the card pixels, but only when they'd actually change
+        (update() runs every loop tick)."""
+        signature = tuple(
+            (m["home"], m["home_score"], m["away_score"], m["away"],
+             m.get("home_cards") or "", m.get("away_cards") or "")
+            for m in page
+        )
+        if signature == self.cards_drawn:
+            return
+        self.cards_drawn = signature
+        self.card_bitmap.fill(0)
+        for match, y in zip(page, self.row_ys):
+            for x, slot, kind in cards.card_pixels(match, TEXT_X, self.advance):
+                color = CARD_COLORS.get(kind)
+                row = y + CARD_TOP_OFFSET + slot * CARD_SLOT_SPACING
+                if color and 0 <= x < 64 and 0 <= row < 32:
+                    self.card_bitmap[x, row] = color
+
     def update(self):
         league_name, matches = self._current_league()
         if league_name is None:
             self.header_label.text = self.title
             self.row_labels[0].text = "No matches today" if self.has_data else "Loading..."
             self.row_labels[1].text = ""
+            self._draw_cards([])
             return
 
         self.header_label.text = league_name
@@ -186,6 +243,7 @@ class LeagueScorePager:
         page = matches[start:start + 2]
         for i, lbl in enumerate(self.row_labels):
             lbl.text = self._match_line(page[i]) if i < len(page) else ""
+        self._draw_cards(page)
 
         if time.monotonic() - self.page_started_at > PAGE_SECONDS:
             self._advance_page()
@@ -194,6 +252,7 @@ class LeagueScorePager:
         self.header_label.text = ""
         for lbl in self.row_labels:
             lbl.text = ""
+        self._draw_cards([])
 
 
 RENDERERS = {
