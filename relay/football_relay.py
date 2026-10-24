@@ -92,7 +92,7 @@ _clock_anchors = {}
 def _estimated_game_seconds(event_id, details, status_name):
     """
     Latest logged event time plus wall time elapsed since the relay first saw
-    it, frozen at half time. Never earlier than the latest logged event, so a
+    it, pinned at 40' through half time. Never earlier than the latest logged event, so a
     relay restart mid-match can't resurrect a yellow that has already expired.
     """
     latest = max((d.get("clock", {}).get("value") or 0 for d in details), default=0)
@@ -101,12 +101,23 @@ def _estimated_game_seconds(event_id, details, status_name):
     if anchor is None or latest > anchor[0]:
         anchor = (latest, now)
     elif "HALFTIME" in status_name:
-        # Freeze at the current estimate (a half is 40 minutes, so don't let a
-        # long gap since the last event carry the clock past it).
-        frozen = anchor[0] + (now - anchor[1])
-        anchor = (max(anchor[0], min(frozen, HALF_SECONDS)), now)
+        # Half time is 40' by definition: pin the clock there and hold it.
+        anchor = (max(anchor[0], HALF_SECONDS), now)
     _clock_anchors[event_id] = anchor
     return anchor[0] + (now - anchor[1])
+
+
+def _rugby_minute_text(comp):
+    """
+    Live match minute for rugby, from the estimated clock. ESPN's own status
+    clock is stuck (e.g. "second half, 1'" with tries logged at 66').
+    """
+    status = comp["status"]
+    period = 2 if status.get("period", 1) >= 2 else 1
+    seconds = _estimated_game_seconds(
+        comp.get("id") or id(comp), comp.get("details") or [], status["type"].get("name", ""))
+    seconds = min(max(seconds, HALF_SECONDS if period == 2 else 0), HALF_SECONDS * period)
+    return f"{max(int(seconds // 60), 1)}'"
 
 
 def _card_kind(detail):
@@ -168,6 +179,13 @@ def _reduce_event(event, rugby=False):
     if home.get("homeAway") != "home":
         home, away = away, home
     comp.setdefault("id", event.get("id"))
+    status_text = _status_text(comp["status"])
+    if rugby and comp["status"]["type"]["state"] == "in":
+        # Always advance the clock (pins it at half time too); only the
+        # minute text is skipped at HT.
+        minute_text = _rugby_minute_text(comp)
+        if status_text != "HT":
+            status_text = minute_text
     home_cards, away_cards = _card_strings(comp, home["team"].get("id"), away["team"].get("id"), rugby)
     return {
         "home_cards": home_cards,
@@ -178,7 +196,7 @@ def _reduce_event(event, rugby=False):
         "away": away["team"]["abbreviation"],
         "home_score": home.get("score"),
         "away_score": away.get("score"),
-        "status": _status_text(comp["status"]),
+        "status": status_text,
     }
 
 
