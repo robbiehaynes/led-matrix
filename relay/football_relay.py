@@ -79,6 +79,7 @@ MAX_CARD_SLOTS = 3  # the display has room for three pixels per team
 # A rugby yellow is a 10-minute sin-bin, so it only counts while it's being
 # served. Football yellows (and all reds) stay for the whole match.
 SIN_BIN_SECONDS = 600
+HALF_SECONDS = 2400
 # Set False to keep rugby yellows on screen for the whole match instead.
 RUGBY_YELLOWS_ONLY_WHILE_ACTIVE = True
 
@@ -97,8 +98,13 @@ def _estimated_game_seconds(event_id, details, status_name):
     latest = max((d.get("clock", {}).get("value") or 0 for d in details), default=0)
     now = time.time()
     anchor = _clock_anchors.get(event_id)
-    if anchor is None or latest > anchor[0] or "HALFTIME" in status_name:
-        anchor = (max(latest, anchor[0] if anchor else 0), now)
+    if anchor is None or latest > anchor[0]:
+        anchor = (latest, now)
+    elif "HALFTIME" in status_name:
+        # Freeze at the current estimate (a half is 40 minutes, so don't let a
+        # long gap since the last event carry the clock past it).
+        frozen = anchor[0] + (now - anchor[1])
+        anchor = (max(anchor[0], min(frozen, HALF_SECONDS)), now)
     _clock_anchors[event_id] = anchor
     return anchor[0] + (now - anchor[1])
 
